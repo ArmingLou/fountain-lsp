@@ -11,7 +11,7 @@ async fn main() {
     let stdout = tokio::io::stdout();
 
     let (service, socket) = LspService::build(|_client| FountainServer::new())
-        .finish();
+    .finish();
 
     LspServer::new(stdin, stdout, socket).serve(service).await;
 }

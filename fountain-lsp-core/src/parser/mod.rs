@@ -65,6 +65,16 @@ impl DocumentStore {
         docs.get(uri).cloned()
     }
 
+    pub async fn get_mut_ref(&self, uri: &str) -> Option<FountainDocument> {
+        let docs = self.documents.lock().await;
+        docs.get(uri).cloned()
+    }
+
+    pub async fn update(&self, uri: String, doc: FountainDocument) {
+        let mut docs = self.documents.lock().await;
+        docs.insert(uri, doc);
+    }
+
     pub async fn remove(&self, uri: &str) -> Option<FountainDocument> {
         let mut docs = self.documents.lock().await;
         docs.remove(uri)

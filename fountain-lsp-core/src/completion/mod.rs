@@ -30,34 +30,38 @@ impl CompletionProvider {
         
         let lines: Vec<&str> = doc.text.lines().collect();
         let line_text = lines.get(current_line as usize).map(|s| *s).unwrap_or("");
+        let line_trimmed = line_text.trim();
+        
+        if doc.parsed.is_none() {
+            return None;
+        }
+        
+        let parsed = doc.parsed.as_ref().unwrap();
+        let first_title_line = parsed.properties.first_token_line.unwrap_or(0);
+        
         let prev_line = if current_line > 0 {
             lines.get((current_line - 1) as usize).map(|s| *s).unwrap_or("")
         } else {
             ""
         };
         let prev_line_empty = prev_line.trim().is_empty();
-        let line_trimmed = line_text.trim();
         
-        let parsed = match &doc.parsed {
-            Some(p) => p,
-            None => return None,
-        };
+        eprintln!("[Completion] characters: {:?}", parsed.properties.characters.keys().collect::<Vec<_>>());
         
         let mut items: Vec<CompletionItem> = Vec::new();
-        
-        let first_title_line = parsed.properties.first_token_line.unwrap_or(0);
         
         if first_title_line as i32 >= current_line as i32 {
             self.add_title_page_completions(line_trimmed, current_char, &mut items, &parsed.properties);
         } else {
-            self.add_scene_completions(line_trimmed, current_char, current_line, &mut items, &parsed.properties);
-            self.add_transition_completions(line_trimmed, current_char, prev_line_empty, &mut items);
+            self.add_scene_completions(line_trimmed, current_char, current_line, &mut items);
+            self.add_transition_completions(line_trimmed, current_char, current_line, prev_line_empty, &mut items);
             self.add_character_completions(line_trimmed, current_char, current_line, &mut items, &parsed.properties, &doc.text);
-            self.add_scene_heading_completions(line_trimmed, current_char, &mut items, &parsed.properties);
-            self.add_note_completions(line_text, current_char, &mut items);
-            self.add_parenthetical_completions(line_trimmed, current_char, line_text, &mut items);
-            self.add_underline_completions(line_text, current_char, &mut items);
-            self.add_scene_number_completions(line_text, current_char, &mut items, &parsed.properties);
+            self.add_scene_heading_completions(line_trimmed, current_char, current_line, &mut items, &parsed.properties);
+            self.add_location_completions_after_scene_heading(line_trimmed, current_char, current_line, line_text, &mut items, &parsed.properties);
+            self.add_note_completions(line_text, current_char, current_line, &mut items);
+            self.add_parenthetical_completions(line_trimmed, current_char, current_line, line_text, &mut items, &parsed.properties);
+            self.add_underline_completions(line_text, current_char, current_line, &mut items);
+            self.add_scene_number_completions(line_trimmed, line_text, current_char, current_line, &mut items, &parsed.properties);
         }
 
         if items.is_empty() {
@@ -154,43 +158,72 @@ impl CompletionProvider {
     fn add_scene_completions(
         &self,
         line_trimmed: &str,
-        _current_char: u32,
-        _current_line: u32,
+        current_char: u32,
+        current_line: u32,
         items: &mut Vec<CompletionItem>,
-        properties: &betterfountain_rust::ScreenplayProperties,
     ) {
-        if line_trimmed == "." || line_trimmed == ".(" {
+        if line_trimmed == "." || line_trimmed == ".(" || line_trimmed == "。" || line_trimmed == "。(" {
+            let trigger_len = 1u32;
+            let range = Range {
+                start: Position { line: current_line, character: current_char - trigger_len },
+                end: Position { line: current_line, character: current_char },
+            };
+            
             items.push(CompletionItem {
-                label: ".(内景) ".to_string(),
+                label: ".(内景)".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: ".(内景)".to_string() })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("内景".to_string()),
                 sort_text: Some("00B".to_string()),
                 ..Default::default()
             });
             items.push(CompletionItem {
-                label: ".(外景) ".to_string(),
+                label: ".(外景)".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: ".(外景)".to_string() })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("外景".to_string()),
                 sort_text: Some("00C".to_string()),
                 ..Default::default()
             });
             items.push(CompletionItem {
-                label: ".(内外景) ".to_string(),
+                label: ".(内外景)".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: ".(内外景)".to_string() })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("内外景".to_string()),
                 sort_text: Some("00D".to_string()),
                 ..Default::default()
             });
+        }
+    }
 
-            if let Some(ref vars) = properties.scene_number_vars {
-                for var in vars {
-                    items.push(CompletionItem {
-                        label: format!("#{{{}}}#", var),
-                        kind: Some(CompletionItemKind::VARIABLE),
-                        detail: Some("Scene number".to_string()),
-                        sort_text: Some(format!("00E{}", var)),
-                        ..Default::default()
-                    });
+    fn add_location_completions_after_scene_heading(
+        &self,
+        line_trimmed: &str,
+        current_char: u32,
+        current_line: u32,
+        line_text: &str,
+        items: &mut Vec<CompletionItem>,
+        properties: &betterfountain_rust::ScreenplayProperties,
+    ) {
+        let is_scene_line = |line: &str| -> bool {
+            let upper = line.to_uppercase();
+            upper.starts_with("INT.") || upper.starts_with("EXT.") || 
+            upper.starts_with("INT/EXT.") || upper.starts_with("EST.") ||
+            upper.starts_with("I/E.") || (line.trim().starts_with('.') && line.trim().len() > 1)
+        };
+
+        if is_scene_line(line_trimmed) && !line_trimmed.ends_with('-') && !line_trimmed.ends_with('–') && !line_trimmed.ends_with('—') {
+            if current_char > 0 && line_text.chars().nth((current_char - 1) as usize) == Some(' ') {
+                for location in properties.locations.keys() {
+                    if !location.is_empty() {
+                        items.push(CompletionItem {
+                            label: location.clone(),
+                            kind: Some(CompletionItemKind::CONSTANT),
+                            detail: Some("场景位置".to_string()),
+                            sort_text: Some(format!("0C{}", location)),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         }
@@ -199,15 +232,22 @@ impl CompletionProvider {
     fn add_transition_completions(
         &self,
         line_trimmed: &str,
-        _current_char: u32,
+        current_char: u32,
+        current_line: u32,
         prev_line_empty: bool,
         items: &mut Vec<CompletionItem>,
     ) {
-        if line_trimmed == ">" {
-            let _prefix = if prev_line_empty { "" } else { "\n" };
+        if line_trimmed == ">" || line_trimmed == "＞" || line_trimmed == "》" {
+            let trigger_len = 1u32;
+            let range = Range {
+                start: Position { line: current_line, character: current_char - trigger_len },
+                end: Position { line: current_line, character: current_char },
+            };
+            let prefix = if prev_line_empty { "" } else { "\n" };
             
             items.push(CompletionItem {
                 label: ">".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: ">".to_string() })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("插入转场".to_string()),
                 sort_text: Some("0A".to_string()),
@@ -215,6 +255,7 @@ impl CompletionProvider {
             });
             items.push(CompletionItem {
                 label: ">叠化".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!("{}>叠化", prefix) })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("插入转场".to_string()),
                 sort_text: Some("0b".to_string()),
@@ -222,6 +263,7 @@ impl CompletionProvider {
             });
             items.push(CompletionItem {
                 label: ">淡出淡入".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!("{}>淡出淡入", prefix) })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("插入转场".to_string()),
                 sort_text: Some("0c".to_string()),
@@ -229,6 +271,7 @@ impl CompletionProvider {
             });
             items.push(CompletionItem {
                 label: ">切到".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!("{}>切到", prefix) })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("插入转场".to_string()),
                 sort_text: Some("0d".to_string()),
@@ -236,6 +279,7 @@ impl CompletionProvider {
             });
             items.push(CompletionItem {
                 label: ">闪回".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!("{}>闪回", prefix) })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("插入转场".to_string()),
                 sort_text: Some("0f".to_string()),
@@ -243,6 +287,7 @@ impl CompletionProvider {
             });
             items.push(CompletionItem {
                 label: ">淡出".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!("{}>淡出", prefix) })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("插入转场".to_string()),
                 sort_text: Some("0g".to_string()),
@@ -250,6 +295,7 @@ impl CompletionProvider {
             });
             items.push(CompletionItem {
                 label: ">淡入".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!("{}>淡入", prefix) })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("插入转场".to_string()),
                 sort_text: Some("0h".to_string()),
@@ -257,6 +303,7 @@ impl CompletionProvider {
             });
             items.push(CompletionItem {
                 label: ">闪回结束".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!("{}>闪回结束", prefix) })),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("插入转场".to_string()),
                 sort_text: Some("0i".to_string()),
@@ -264,10 +311,10 @@ impl CompletionProvider {
             });
             items.push(CompletionItem {
                 label: "> <".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!("{}>$1<", prefix) })),
+                insert_text_format: Some(InsertTextFormat::SNIPPET),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("插入居中语法".to_string()),
-                insert_text: Some(">$1<".to_string()),
-                insert_text_format: Some(InsertTextFormat::SNIPPET),
                 sort_text: Some("1B".to_string()),
                 ..Default::default()
             });
@@ -283,8 +330,11 @@ impl CompletionProvider {
         properties: &betterfountain_rust::ScreenplayProperties,
         text: &str,
     ) {
+        tracing::info!("add_character_completions called, line_trimmed: '{}', characters count: {}", line_trimmed, properties.characters.len());
+        
         if line_trimmed == "@" {
             let characters: Vec<&String> = properties.characters.keys().collect();
+            tracing::info!("Characters found: {:?}", characters);
             
             let mut current_scene_characters: Vec<&String> = Vec::new();
             let lines: Vec<&str> = text.lines().collect();
@@ -310,6 +360,7 @@ impl CompletionProvider {
             for char_name in &current_scene_characters {
                 items.push(CompletionItem {
                     label: format!("@{}", char_name),
+                    insert_text: Some(char_name.to_string()),
                     kind: Some(CompletionItemKind::KEYWORD),
                     detail: Some("当前场景角色".to_string()),
                     sort_text: Some(format!("0A{:03}", index)),
@@ -328,6 +379,7 @@ impl CompletionProvider {
                 if !current_scene_characters.contains(char_name) && !char_name.trim().is_empty() {
                     items.push(CompletionItem {
                         label: format!("@{}", char_name),
+                        insert_text: Some(char_name.to_string()),
                         kind: Some(CompletionItemKind::TEXT),
                         detail: Some("角色".to_string()),
                         sort_text: Some(format!("{}{}", sort_text, char_name)),
@@ -339,14 +391,16 @@ impl CompletionProvider {
 
         if (line_trimmed == "e" || line_trimmed == "E") && current_char == 1 {
             items.push(CompletionItem {
-                label: "EXT. ".to_string(),
+                label: "EXT.".to_string(),
+                insert_text: Some("EXT.".to_string()),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("外景".to_string()),
                 sort_text: Some("001F".to_string()),
                 ..Default::default()
             });
             items.push(CompletionItem {
-                label: "INT/EXT. ".to_string(),
+                label: "INT/EXT.".to_string(),
+                insert_text: Some("INT/EXT.".to_string()),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("内/外景".to_string()),
                 sort_text: Some("001h".to_string()),
@@ -354,6 +408,7 @@ impl CompletionProvider {
             });
             items.push(CompletionItem {
                 label: "EST. ".to_string(),
+                insert_text: Some("EST. ".to_string()),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("建立镜头".to_string()),
                 sort_text: Some("001i".to_string()),
@@ -363,14 +418,14 @@ impl CompletionProvider {
 
         if (line_trimmed == "i" || line_trimmed == "I") && current_char == 1 {
             items.push(CompletionItem {
-                label: "INT. ".to_string(),
+                label: "INT.".to_string(),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("内景".to_string()),
                 sort_text: Some("001F".to_string()),
                 ..Default::default()
             });
             items.push(CompletionItem {
-                label: "INT/EXT. ".to_string(),
+                label: "INT/EXT.".to_string(),
                 kind: Some(CompletionItemKind::KEYWORD),
                 detail: Some("内/外景".to_string()),
                 sort_text: Some("001h".to_string()),
@@ -383,6 +438,7 @@ impl CompletionProvider {
         &self,
         line_trimmed: &str,
         current_char: u32,
+        current_line: u32,
         items: &mut Vec<CompletionItem>,
         properties: &betterfountain_rust::ScreenplayProperties,
     ) {
@@ -395,8 +451,13 @@ impl CompletionProvider {
 
         if is_scene_line(line_trimmed) {
             if line_trimmed.ends_with('-') || line_trimmed.ends_with('–') || line_trimmed.ends_with('—') {
+                let range = Range {
+                    start: Position { line: current_line, character: current_char - 1 },
+                    end: Position { line: current_line, character: current_char },
+                };
                 items.push(CompletionItem {
                     label: "- 日".to_string(),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " - 日".to_string() })),
                     kind: Some(CompletionItemKind::CONSTANT),
                     detail: Some("时间".to_string()),
                     sort_text: Some("A".to_string()),
@@ -404,13 +465,39 @@ impl CompletionProvider {
                 });
                 items.push(CompletionItem {
                     label: "- 夜".to_string(),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " - 夜".to_string() })),
                     kind: Some(CompletionItemKind::CONSTANT),
                     detail: Some("时间".to_string()),
                     sort_text: Some("B".to_string()),
                     ..Default::default()
                 });
                 items.push(CompletionItem {
+                    label: "- 黎明".to_string(),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " - 黎明".to_string() })),
+                    kind: Some(CompletionItemKind::CONSTANT),
+                    detail: Some("时间".to_string()),
+                    sort_text: Some("BA".to_string()),
+                    ..Default::default()
+                });
+                items.push(CompletionItem {
+                    label: "- 清晨".to_string(),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " - 清晨".to_string() })),
+                    kind: Some(CompletionItemKind::CONSTANT),
+                    detail: Some("时间".to_string()),
+                    sort_text: Some("BB".to_string()),
+                    ..Default::default()
+                });
+                items.push(CompletionItem {
+                    label: "- 黄昏".to_string(),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " - 黄昏".to_string() })),
+                    kind: Some(CompletionItemKind::CONSTANT),
+                    detail: Some("时间".to_string()),
+                    sort_text: Some("BC".to_string()),
+                    ..Default::default()
+                });
+                items.push(CompletionItem {
                     label: "- DAY".to_string(),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " - DAY".to_string() })),
                     kind: Some(CompletionItemKind::CONSTANT),
                     detail: Some("时间".to_string()),
                     sort_text: Some("E".to_string()),
@@ -418,6 +505,7 @@ impl CompletionProvider {
                 });
                 items.push(CompletionItem {
                     label: "- NIGHT".to_string(),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " - NIGHT".to_string() })),
                     kind: Some(CompletionItemKind::CONSTANT),
                     detail: Some("时间".to_string()),
                     sort_text: Some("F".to_string()),
@@ -425,6 +513,7 @@ impl CompletionProvider {
                 });
                 items.push(CompletionItem {
                     label: "- DUSK".to_string(),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " - DUSK".to_string() })),
                     kind: Some(CompletionItemKind::CONSTANT),
                     detail: Some("时间".to_string()),
                     sort_text: Some("G".to_string()),
@@ -432,23 +521,12 @@ impl CompletionProvider {
                 });
                 items.push(CompletionItem {
                     label: "- DAWN".to_string(),
+                    text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " - DAWN".to_string() })),
                     kind: Some(CompletionItemKind::CONSTANT),
                     detail: Some("时间".to_string()),
                     sort_text: Some("H".to_string()),
                     ..Default::default()
                 });
-            } else {
-                for location in properties.locations.keys() {
-                    if !location.is_empty() {
-                        items.push(CompletionItem {
-                            label: location.clone(),
-                            kind: Some(CompletionItemKind::CONSTANT),
-                            detail: Some("场景位置".to_string()),
-                            sort_text: Some(format!("0B{}", location)),
-                            ..Default::default()
-                        });
-                    }
-                }
             }
         }
     }
@@ -457,18 +535,24 @@ impl CompletionProvider {
         &self,
         line_text: &str,
         current_char: u32,
+        current_line: u32,
         items: &mut Vec<CompletionItem>,
     ) {
         if current_char > 0 {
             let char_idx = (current_char - 1) as usize;
             if char_idx < line_text.len() {
                 let prev_char = line_text.chars().nth(char_idx).unwrap_or(' ');
-                if prev_char == '【' {
+                if prev_char == '【' || prev_char == '[' {
+                    let trigger_len = 1u32;
+                    let range = Range {
+                        start: Position { line: current_line, character: current_char - trigger_len },
+                        end: Position { line: current_line, character: current_char },
+                    };
                     items.push(CompletionItem {
                         label: "[[ ]] 插入note".to_string(),
                         kind: Some(CompletionItemKind::SNIPPET),
                         detail: Some("插入note".to_string()),
-                        insert_text: Some("[[$1]]".to_string()),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: "[[$1]]".to_string() })),
                         insert_text_format: Some(InsertTextFormat::SNIPPET),
                         sort_text: Some("0B".to_string()),
                         ..Default::default()
@@ -477,7 +561,7 @@ impl CompletionProvider {
                         label: "[[| ]] 插入note(强制原位)".to_string(),
                         kind: Some(CompletionItemKind::SNIPPET),
                         detail: Some("插入note(强制原位)".to_string()),
-                        insert_text: Some("[[|$1]]".to_string()),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: "[[|$1]]".to_string() })),
                         insert_text_format: Some(InsertTextFormat::SNIPPET),
                         sort_text: Some("0C".to_string()),
                         ..Default::default()
@@ -491,17 +575,85 @@ impl CompletionProvider {
         &self,
         line_trimmed: &str,
         current_char: u32,
+        current_line: u32,
         line_text: &str,
         items: &mut Vec<CompletionItem>,
+        properties: &betterfountain_rust::ScreenplayProperties,
     ) {
+        let is_character_line = |line: &str, props: &betterfountain_rust::ScreenplayProperties| -> bool {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                return false;
+            }
+            if trimmed.starts_with('@') {
+                return true;
+            }
+            let trimmed_upper = trimmed.to_uppercase();
+            for char_name in props.characters.keys() {
+                let char_upper = char_name.to_uppercase();
+                if trimmed_upper == char_upper || trimmed_upper.starts_with(&format!("{} ", char_upper)) {
+                    return true;
+                }
+            }
+            false
+        };
+
+        let is_prev_line_character = |line: u32, text: &str, props: &betterfountain_rust::ScreenplayProperties| -> bool {
+            if line == 0 {
+                return false;
+            }
+            let lines: Vec<&str> = text.lines().collect();
+            if let Some(prev_line) = lines.get((line - 1) as usize) {
+                is_character_line(prev_line, props)
+            } else {
+                false
+            }
+        };
+
+        let current_is_character = is_character_line(line_trimmed, properties);
+        let prev_is_character = is_prev_line_character(current_line, line_text, properties);
+        
         if current_char > 0 {
             let char_idx = (current_char - 1) as usize;
             if char_idx < line_text.len() {
                 let prev_char = line_text.chars().nth(char_idx).unwrap_or(' ');
+                let range = Range {
+                    start: Position { line: current_line, character: current_char - 1 },
+                    end: Position { line: current_line, character: current_char },
+                };
                 
-                if prev_char == '(' && !line_trimmed.starts_with(".(") {
+                if prev_char == '（' {
+                    items.push(CompletionItem {
+                        label: "() 转为英文括号".to_string(),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " ($1)".to_string() })),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        kind: Some(CompletionItemKind::SNIPPET),
+                        detail: Some("转换为英文括号".to_string()),
+                        sort_text: Some("0A".to_string()),
+                        ..Default::default()
+                    });
+                    if current_is_character || prev_is_character {
+                        items.push(CompletionItem {
+                            label: "(画外音)".to_string(),
+                            text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " (画外音)".to_string() })),
+                            kind: Some(CompletionItemKind::CONSTANT),
+                            detail: Some("画外音".to_string()),
+                            sort_text: Some("0B".to_string()),
+                            ..Default::default()
+                        });
+                        items.push(CompletionItem {
+                            label: "(旁白)".to_string(),
+                            text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " (旁白)".to_string() })),
+                            kind: Some(CompletionItemKind::CONSTANT),
+                            detail: Some("旁白".to_string()),
+                            sort_text: Some("0C".to_string()),
+                            ..Default::default()
+                        });
+                    }
+                } else if (current_is_character || prev_is_character) && prev_char == '(' && !line_trimmed.starts_with(".(") {
                     items.push(CompletionItem {
                         label: "(画外音)".to_string(),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " (画外音)".to_string() })),
                         kind: Some(CompletionItemKind::CONSTANT),
                         detail: Some("画外音".to_string()),
                         sort_text: Some("0A".to_string()),
@@ -509,6 +661,7 @@ impl CompletionProvider {
                     });
                     items.push(CompletionItem {
                         label: "(旁白)".to_string(),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " (旁白)".to_string() })),
                         kind: Some(CompletionItemKind::CONSTANT),
                         detail: Some("旁白".to_string()),
                         sort_text: Some("1A".to_string()),
@@ -516,6 +669,7 @@ impl CompletionProvider {
                     });
                     items.push(CompletionItem {
                         label: "(O.S.)".to_string(),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " (O.S.)".to_string() })),
                         kind: Some(CompletionItemKind::CONSTANT),
                         detail: Some("画外音".to_string()),
                         sort_text: Some("1B".to_string()),
@@ -523,42 +677,19 @@ impl CompletionProvider {
                     });
                     items.push(CompletionItem {
                         label: "(V.O.)".to_string(),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " (V.O.)".to_string() })),
                         kind: Some(CompletionItemKind::CONSTANT),
                         detail: Some("旁白".to_string()),
-                        sort_text: Some("1B".to_string()),
+                        sort_text: Some("1C".to_string()),
                         ..Default::default()
                     });
                     items.push(CompletionItem {
                         label: "()".to_string(),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " ($1)".to_string() })),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
                         kind: Some(CompletionItemKind::SNIPPET),
                         detail: Some("添加对话说明".to_string()),
-                        insert_text: Some("($1)".to_string()),
-                        insert_text_format: Some(InsertTextFormat::SNIPPET),
                         sort_text: Some("3B".to_string()),
-                        ..Default::default()
-                    });
-                } else if prev_char == '（' {
-                    items.push(CompletionItem {
-                        label: "(画外音)".to_string(),
-                        kind: Some(CompletionItemKind::CONSTANT),
-                        detail: Some("画外音".to_string()),
-                        sort_text: Some("0A".to_string()),
-                        ..Default::default()
-                    });
-                    items.push(CompletionItem {
-                        label: "(旁白)".to_string(),
-                        kind: Some(CompletionItemKind::CONSTANT),
-                        detail: Some("旁白".to_string()),
-                        sort_text: Some("1A".to_string()),
-                        ..Default::default()
-                    });
-                    items.push(CompletionItem {
-                        label: "()".to_string(),
-                        kind: Some(CompletionItemKind::SNIPPET),
-                        detail: Some("插入英文括号".to_string()),
-                        insert_text: Some("($1)".to_string()),
-                        insert_text_format: Some(InsertTextFormat::SNIPPET),
-                        sort_text: Some("2B".to_string()),
                         ..Default::default()
                     });
                 }
@@ -570,15 +701,21 @@ impl CompletionProvider {
         &self,
         line_text: &str,
         current_char: u32,
+        current_line: u32,
         items: &mut Vec<CompletionItem>,
     ) {
         if current_char >= 2 {
             let char_idx = (current_char - 2) as usize;
             if char_idx < line_text.len() {
                 let prev_chars: String = line_text.chars().skip(char_idx.saturating_sub(1)).take(2).collect();
-                if prev_chars == "——" {
+                if prev_chars == "——" || prev_chars == "--" {
+                    let range = Range {
+                        start: Position { line: current_line, character: current_char - 2 },
+                        end: Position { line: current_line, character: current_char },
+                    };
                     items.push(CompletionItem {
                         label: "_     转为下划线".to_string(),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: "_".to_string() })),
                         kind: Some(CompletionItemKind::KEYWORD),
                         detail: Some("转为下划线".to_string()),
                         sort_text: Some("0A".to_string()),
@@ -586,10 +723,10 @@ impl CompletionProvider {
                     });
                     items.push(CompletionItem {
                         label: "_ _   插入下划线语法".to_string(),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: "_$1_".to_string() })),
+                        insert_text_format: Some(InsertTextFormat::SNIPPET),
                         kind: Some(CompletionItemKind::SNIPPET),
                         detail: Some("插入下划线语法".to_string()),
-                        insert_text: Some("_$1_".to_string()),
-                        insert_text_format: Some(InsertTextFormat::SNIPPET),
                         sort_text: Some("0B".to_string()),
                         ..Default::default()
                     });
@@ -600,8 +737,10 @@ impl CompletionProvider {
 
     fn add_scene_number_completions(
         &self,
+        line_trimmed: &str,
         line_text: &str,
         current_char: u32,
+        current_line: u32,
         items: &mut Vec<CompletionItem>,
         properties: &betterfountain_rust::ScreenplayProperties,
     ) {
@@ -610,12 +749,27 @@ impl CompletionProvider {
             if char_idx < line_text.len() {
                 let prev_char = line_text.chars().nth(char_idx).unwrap_or(' ');
                 if prev_char == '#' {
+                    let is_scene_line = |line: &str| -> bool {
+                        let upper = line.to_uppercase();
+                        upper.starts_with("INT.") || upper.starts_with("EXT.") || 
+                        upper.starts_with("INT/EXT.") || upper.starts_with("EST.") ||
+                        upper.starts_with("I/E.") || (line.trim().starts_with('.') && line.trim().len() > 1)
+                    };
+                    
+                    if !is_scene_line(line_trimmed) {
+                        return;
+                    }
+                    
+                    let range = Range {
+                        start: Position { line: current_line, character: current_char - 1 },
+                        end: Position { line: current_line, character: current_char },
+                    };
                     items.push(CompletionItem {
-                        label: "#{$}#  插入场号重复ID".to_string(),
-                        kind: Some(CompletionItemKind::VARIABLE),
-                        detail: Some("插入场号重复ID".to_string()),
-                        insert_text: Some("#${$1}#\n\n".to_string()),
+                        label: "#${}#".to_string(),
+                        text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: " #${}#".to_string() })),
                         insert_text_format: Some(InsertTextFormat::SNIPPET),
+                        kind: Some(CompletionItemKind::VARIABLE),
+                        detail: Some("插入场号".to_string()),
                         sort_text: Some("0A".to_string()),
                         ..Default::default()
                     });
@@ -624,6 +778,7 @@ impl CompletionProvider {
                         for var in vars {
                             items.push(CompletionItem {
                                 label: format!("#{{{}}}#", var),
+                                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!(" #{{{}}}#", var) })),
                                 kind: Some(CompletionItemKind::VARIABLE),
                                 detail: Some("Scene number".to_string()),
                                 sort_text: Some(format!("0B{}", var)),

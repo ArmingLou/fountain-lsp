@@ -1,8 +1,6 @@
 use tower_lsp::lsp_types::*;
 use crate::parser::{FountainDocument, DocumentStore};
 use crate::completion::CompletionProvider;
-use std::sync::Arc;
-use tokio::sync::Mutex;
 
 pub struct FountainLanguageHandler {
     capabilities: ServerCapabilities,
@@ -17,7 +15,29 @@ impl FountainLanguageHandler {
         FountainLanguageHandler {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
-                completion_provider: Some(CompletionOptions::default()),
+                completion_provider: Some(CompletionOptions {
+                    trigger_characters: Some(vec![
+                        "@".to_string(),
+                        "＞".to_string(),
+                        ">".to_string(),
+                        "。".to_string(),
+                        ".".to_string(),
+                        "》".to_string(),
+                        "——".to_string(),
+                        "【".to_string(),
+                        "[".to_string(),
+                        "-".to_string(),
+                        "（".to_string(),
+                        "(".to_string(),
+                        "#".to_string(),
+                        " ".to_string(),
+                        "i".to_string(),
+                        "I".to_string(),
+                        "e".to_string(),
+                        "E".to_string(),
+                    ]),
+                    ..Default::default()
+                }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 ..ServerCapabilities::default()
@@ -56,12 +76,12 @@ impl FountainLanguageHandler {
         let uri = params.text_document.uri.to_string();
         let version = params.text_document.version;
 
-        if let Some(mut doc) = self.documents.get_mut(&uri).await {
-            if let Some(change) = params.content_changes.into_iter().next() {
-                doc.text = change.text;
-                doc.version = version;
-                doc.parse();
-            }
+        if let Some(change) = params.content_changes.into_iter().next() {
+            let mut doc = self.documents.get(&uri).await.unwrap();
+            doc.text = change.text;
+            doc.version = version;
+            doc.parse();
+            self.documents.update(uri, doc).await;
         }
     }
 
