@@ -20,38 +20,104 @@ impl ParsedFountain {
         let mut notes_items: Vec<DocumentSymbol> = Vec::new();
         let mut bookmarks_items: Vec<DocumentSymbol> = Vec::new();
 
+        // 遍历顶层结构
         for token in &self.properties.structure {
-            self.process_token_for_symbols(token, &mut root_children, &mut notes_items, &mut bookmarks_items);
+            // 顶层 isnote 直接收集到 notes_items
+            if token.isnote {
+                notes_items.push(self.create_note_symbol(token));
+                continue;
+            }
+            // 顶层 is_bookmark 直接收集到 bookmarks_items
+            if token.is_bookmark {
+                bookmarks_items.push(self.create_bookmark_symbol(token));
+                continue;
+            }
+            // 其他 token 正常构建 symbol
+            let mut symbol = self.token_to_document_symbol(token);
+            let mut children: Vec<DocumentSymbol> = Vec::new();
+            
+            // 递��处理子节点（子节点中的 note/bookmark 保留在原位置）
+            self.build_children_tree(&token.children, &mut children, &mut notes_items, &mut bookmarks_items);
+            self.build_children_tree(&token.structs, &mut children, &mut notes_items, &mut bookmarks_items);
+            
+            // 添加 synopses 作为当前节点的 children
+            for syn in &token.synopses {
+                let range = Range::new(
+                    Position::new(syn.line as u32, 0),
+                    Position::new(syn.line as u32, syn.synopsis.len() as u32)
+                );
+                children.push(DocumentSymbol {
+                    name: syn.synopsis.clone(),
+                    detail: None,
+                    kind: SymbolKind::INTERFACE,
+                    tags: None,
+                    deprecated: None,
+                    range: range.clone(),
+                    selection_range: range,
+                    children: None,
+                });
+            }
+            
+            // 添加 token.notes（附属注解）作为当前节点的 children
+            for note in &token.notes {
+                let range = Range::new(
+                    Position::new(note.line as u32, 0),
+                    Position::new(note.line as u32, note.note.len() as u32)
+                );
+                children.push(DocumentSymbol {
+                    name: note.note.clone(),
+                    detail: None,
+                    kind: SymbolKind::CONSTANT,
+                    tags: None,
+                    deprecated: None,
+                    range: range.clone(),
+                    selection_range: range,
+                    children: None,
+                });
+            }
+            
+            if !children.is_empty() {
+                children.sort_by_key(|s| s.selection_range.start.line);
+                symbol.children = Some(children);
+            }
+            
+            root_children.push(symbol);
         }
 
         root_children.sort_by_key(|s| s.selection_range.start.line);
+        notes_items.sort_by_key(|s| s.selection_range.start.line);
+        bookmarks_items.sort_by_key(|s| s.selection_range.start.line);
 
+        // NOTES 根节点
         let notes_root = if !notes_items.is_empty() {
-            notes_items.sort_by_key(|s| s.selection_range.start.line);
+            let start = notes_items.first().map(|s| s.range.start).unwrap_or(Position::new(0, 0));
+            let end = notes_items.last().map(|s| s.range.end).unwrap_or(Position::new(0, 0));
             Some(DocumentSymbol {
                 name: "NOTES".to_string(),
                 detail: None,
                 kind: SymbolKind::MODULE,
                 tags: None,
                 deprecated: None,
-                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-                selection_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                range: Range::new(start, end),
+                selection_range: Range::new(start, end),
                 children: Some(notes_items),
             })
         } else {
             None
         };
 
+        // Bookmarks 根节点
         let bookmarks_root = if !bookmarks_items.is_empty() {
-            bookmarks_items.sort_by_key(|s| s.selection_range.start.line);
+            let start = bookmarks_items.first().map(|s| s.range.start).unwrap_or(Position::new(0, 0));
+            let end = bookmarks_items.last().map(|s| s.range.end).unwrap_or(Position::new(0, 0));
             Some(DocumentSymbol {
                 name: "Bookmarks".to_string(),
                 detail: None,
                 kind: SymbolKind::MODULE,
                 tags: None,
                 deprecated: None,
-                range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-                selection_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
+                range: Range::new(start, end),
+                selection_range: Range::new(start, end),
                 children: Some(bookmarks_items),
             })
         } else {
@@ -79,53 +145,32 @@ impl ParsedFountain {
         vec![root]
     }
 
-    fn process_token_for_symbols(
+    // 递归构建子节点树（子节点中的 note/bookmark 保留在原位置，不提取到顶层）
+    fn build_children_tree(
         &self,
-        token: &betterfountain_rust::StructToken,
-        root_children: &mut Vec<DocumentSymbol>,
-        notes_items: &mut Vec<DocumentSymbol>,
-        bookmarks_items: &mut Vec<DocumentSymbol>,
+        tokens: &[betterfountain_rust::StructToken],
+        parent_children: &mut Vec<DocumentSymbol>,
+        _notes_items: &mut Vec<DocumentSymbol>,
+        _bookmarks_items: &mut Vec<DocumentSymbol>,
     ) {
-        if token.isnote {
-            let symbol = self.create_note_symbol(token);
-            notes_items.push(symbol);
-            return;
-        }
+        for token in tokens {
+            // 子节点如果是 note/bookmark，保留在原位置作为 children
+            let mut symbol = self.token_to_document_symbol(token);
+            let mut children: Vec<DocumentSymbol> = Vec::new();
 
-        if token.is_bookmark {
-            let symbol = self.create_bookmark_symbol(token);
-            bookmarks_items.push(symbol);
-            return;
-        }
+            // 递归处理孙节点
+            self.build_children_tree(&token.children, &mut children, _notes_items, _bookmarks_items);
+            self.build_children_tree(&token.structs, &mut children, _notes_items, _bookmarks_items);
 
-        let symbol = self.token_to_document_symbol(token);
-        root_children.push(symbol);
-
-        let synopses = self.create_synopsis_symbols(token);
-        if !synopses.is_empty() {
-            let insert_pos = root_children.len() - 1;
-            root_children.splice(insert_pos..insert_pos, synopses);
-        }
-
-        for child in &token.children {
-            self.process_token_for_symbols(child, root_children, notes_items, bookmarks_items);
-        }
-        for child in &token.structs {
-            self.process_token_for_symbols(child, root_children, notes_items, bookmarks_items);
-        }
-    }
-
-    fn create_synopsis_symbols(&self, token: &betterfountain_rust::StructToken) -> Vec<DocumentSymbol> {
-        let mut symbols = Vec::new();
-        if !token.synopses.is_empty() {
+            // 添�� synopses
             for syn in &token.synopses {
                 let range = Range::new(
                     Position::new(syn.line as u32, 0),
                     Position::new(syn.line as u32, syn.synopsis.len() as u32)
                 );
-                symbols.push(DocumentSymbol {
-                    name: format!("Line {}", syn.line),
-                    detail: Some(syn.synopsis.clone()),
+                children.push(DocumentSymbol {
+                    name: syn.synopsis.clone(),
+                    detail: None,
                     kind: SymbolKind::INTERFACE,
                     tags: None,
                     deprecated: None,
@@ -134,8 +179,32 @@ impl ParsedFountain {
                     children: None,
                 });
             }
+
+            // 添加 token.notes（附属注解）作为当前节点的 children
+            for note in &token.notes {
+                let range = Range::new(
+                    Position::new(note.line as u32, 0),
+                    Position::new(note.line as u32, note.note.len() as u32)
+                );
+                children.push(DocumentSymbol {
+                    name: note.note.clone(),
+                    detail: None,
+                    kind: SymbolKind::CONSTANT,
+                    tags: None,
+                    deprecated: None,
+                    range: range.clone(),
+                    selection_range: range,
+                    children: None,
+                });
+            }
+
+            if !children.is_empty() {
+                children.sort_by_key(|s| s.selection_range.start.line);
+                symbol.children = Some(children);
+            }
+
+            parent_children.push(symbol);
         }
-        symbols
     }
 
     fn create_note_symbol(&self, token: &betterfountain_rust::StructToken) -> DocumentSymbol {
@@ -150,8 +219,8 @@ impl ParsedFountain {
         );
 
         DocumentSymbol {
-            name: format!("Line {}", line),
-            detail: Some(token.text.clone()),
+            name: if token.text.is_empty() { format!("Line {}", line) } else { token.text.clone() },
+            detail: None,
             kind: SymbolKind::CONSTANT,
             tags: None,
             deprecated: None,
@@ -173,8 +242,8 @@ impl ParsedFountain {
         );
 
         DocumentSymbol {
-            name: format!("Line {}", line),
-            detail: Some(token.text.clone()),
+            name: if token.text.is_empty() { format!("Line {}", line) } else { token.text.clone() },
+            detail: None,
             kind: SymbolKind::CONSTANT,
             tags: None,
             deprecated: None,
