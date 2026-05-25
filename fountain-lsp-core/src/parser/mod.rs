@@ -13,30 +13,22 @@ pub struct ParsedFountain {
 impl ParsedFountain {
     pub fn to_document_symbols(&self) -> Vec<DocumentSymbol> {
         let mut root_children: Vec<DocumentSymbol> = Vec::new();
-        let mut notes_items: Vec<DocumentSymbol> = Vec::new();
-        let mut bookmarks_items: Vec<DocumentSymbol> = Vec::new();
 
-        // 遍历顶层结构
         for token in &self.properties.structure {
-            // 顶层 isnote 直接收集到 notes_items
             if token.isnote {
-                notes_items.push(self.create_note_symbol(token));
+                root_children.push(self.create_note_symbol(token));
                 continue;
             }
-            // 顶层 is_bookmark 直接收集到 bookmarks_items
             if token.is_bookmark {
-                bookmarks_items.push(self.create_bookmark_symbol(token));
+                root_children.push(self.create_bookmark_symbol(token));
                 continue;
             }
-            // 其他 token 正常构建 symbol
             let mut symbol = self.token_to_document_symbol(token);
             let mut children: Vec<DocumentSymbol> = Vec::new();
-            
-            // 递归处理子节点，收集子节点中的 note/bookmark 到顶层
-            self.build_children_tree(&token.children, &mut children, &mut notes_items, &mut bookmarks_items);
-            self.build_children_tree(&token.structs, &mut children, &mut notes_items, &mut bookmarks_items);
-            
-            // 添加 synopses 作为当前节点的 children
+
+            self.build_children_tree(&token.children, &mut children);
+            self.build_children_tree(&token.structs, &mut children);
+
             for syn in &token.synopses {
                 let range = Range::new(
                     Position::new(syn.line as u32, 0),
@@ -53,8 +45,7 @@ impl ParsedFountain {
                     children: None,
                 });
             }
-            
-            // 添加 token.notes（附属注解）作为当前节点的 children
+
             for note in &token.notes {
                 let range = Range::new(
                     Position::new(note.line as u32, 0),
@@ -71,59 +62,33 @@ impl ParsedFountain {
                     children: None,
                 });
             }
-            
+
             if !children.is_empty() {
                 children.sort_by_key(|s| s.selection_range.start.line);
                 symbol.children = Some(children);
             }
-            
+
             root_children.push(symbol);
         }
 
         root_children.sort_by_key(|s| s.selection_range.start.line);
-        notes_items.sort_by_key(|s| s.selection_range.start.line);
-        bookmarks_items.sort_by_key(|s| s.selection_range.start.line);
-
-        // 添加 notes 到场景节点下
-        if !notes_items.is_empty() {
-            if let Some(first_scene) = root_children.iter_mut().find(|s| s.kind == SymbolKind::CLASS) {
-                let mut existing_children = first_scene.children.take().unwrap_or_default();
-                existing_children.extend(notes_items);
-                existing_children.sort_by_key(|s| s.selection_range.start.line);
-                first_scene.children = Some(existing_children);
-            }
-        }
-
-        // 添加 bookmarks 到场景节点下
-        if !bookmarks_items.is_empty() {
-            if let Some(first_scene) = root_children.iter_mut().find(|s| s.kind == SymbolKind::CLASS) {
-                let mut existing_children = first_scene.children.take().unwrap_or_default();
-                existing_children.extend(bookmarks_items);
-                existing_children.sort_by_key(|s| s.selection_range.start.line);
-                first_scene.children = Some(existing_children);
-            }
-        }
-
-        // 直接返回 root_children，不需要根节点
         root_children
     }
 
-    // 递归构建子节点树，收集子节点中的 note/bookmark 到顶层 NOTES/Bookmarks
+    // 递归构建子节点树，保留 note/bookmark 在原位置
     fn build_children_tree(
         &self,
         tokens: &[betterfountain_rust::StructToken],
         parent_children: &mut Vec<DocumentSymbol>,
-        notes_items: &mut Vec<DocumentSymbol>,
-        bookmarks_items: &mut Vec<DocumentSymbol>,
     ) {
         for token in tokens {
-            // 子节点中的 note/bookmark 提取到顶层 NOTES/Bookmarks
+            // 子节点中的 note/bookmark 保留在原位置作为 children
             if token.isnote {
-                notes_items.push(self.create_note_symbol(token));
+                parent_children.push(self.create_note_symbol(token));
                 continue;
             }
             if token.is_bookmark {
-                bookmarks_items.push(self.create_bookmark_symbol(token));
+                parent_children.push(self.create_bookmark_symbol(token));
                 continue;
             }
             
@@ -131,8 +96,8 @@ impl ParsedFountain {
             let mut children: Vec<DocumentSymbol> = Vec::new();
 
             // 递归处理孙节点
-            self.build_children_tree(&token.children, &mut children, notes_items, bookmarks_items);
-            self.build_children_tree(&token.structs, &mut children, notes_items, bookmarks_items);
+            self.build_children_tree(&token.children, &mut children);
+            self.build_children_tree(&token.structs, &mut children);
 
             // 添加 synopses
             for syn in &token.synopses {
