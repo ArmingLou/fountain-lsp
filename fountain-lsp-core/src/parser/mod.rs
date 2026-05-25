@@ -12,10 +12,6 @@ pub struct ParsedFountain {
 
 impl ParsedFountain {
     pub fn to_document_symbols(&self) -> Vec<DocumentSymbol> {
-        let title = self.properties.title_keys.first()
-            .cloned()
-            .unwrap_or_else(|| "Untitled Script".to_string());
-
         let mut root_children: Vec<DocumentSymbol> = Vec::new();
         let mut notes_items: Vec<DocumentSymbol> = Vec::new();
         let mut bookmarks_items: Vec<DocumentSymbol> = Vec::new();
@@ -36,7 +32,7 @@ impl ParsedFountain {
             let mut symbol = self.token_to_document_symbol(token);
             let mut children: Vec<DocumentSymbol> = Vec::new();
             
-            // 递��处理子节点（子节点中的 note/bookmark 保留在原位置）
+            // 递归处理子节点，收集子节点中的 note/bookmark 到顶层
             self.build_children_tree(&token.children, &mut children, &mut notes_items, &mut bookmarks_items);
             self.build_children_tree(&token.structs, &mut children, &mut notes_items, &mut bookmarks_items);
             
@@ -88,81 +84,57 @@ impl ParsedFountain {
         notes_items.sort_by_key(|s| s.selection_range.start.line);
         bookmarks_items.sort_by_key(|s| s.selection_range.start.line);
 
-        // NOTES 根节点
-        let notes_root = if !notes_items.is_empty() {
-            let start = notes_items.first().map(|s| s.range.start).unwrap_or(Position::new(0, 0));
-            let end = notes_items.last().map(|s| s.range.end).unwrap_or(Position::new(0, 0));
-            Some(DocumentSymbol {
-                name: "NOTES".to_string(),
-                detail: None,
-                kind: SymbolKind::MODULE,
-                tags: None,
-                deprecated: None,
-                range: Range::new(start, end),
-                selection_range: Range::new(start, end),
-                children: Some(notes_items),
-            })
-        } else {
-            None
-        };
-
-        // Bookmarks 根节点
-        let bookmarks_root = if !bookmarks_items.is_empty() {
-            let start = bookmarks_items.first().map(|s| s.range.start).unwrap_or(Position::new(0, 0));
-            let end = bookmarks_items.last().map(|s| s.range.end).unwrap_or(Position::new(0, 0));
-            Some(DocumentSymbol {
-                name: "Bookmarks".to_string(),
-                detail: None,
-                kind: SymbolKind::MODULE,
-                tags: None,
-                deprecated: None,
-                range: Range::new(start, end),
-                selection_range: Range::new(start, end),
-                children: Some(bookmarks_items),
-            })
-        } else {
-            None
-        };
-
-        if let Some(notes) = notes_root {
-            root_children.push(notes);
-        }
-        if let Some(bookmarks) = bookmarks_root {
-            root_children.push(bookmarks);
+        // 添加 notes 到场景节点下
+        if !notes_items.is_empty() {
+            if let Some(first_scene) = root_children.iter_mut().find(|s| s.kind == SymbolKind::CLASS) {
+                let mut existing_children = first_scene.children.take().unwrap_or_default();
+                existing_children.extend(notes_items);
+                existing_children.sort_by_key(|s| s.selection_range.start.line);
+                first_scene.children = Some(existing_children);
+            }
         }
 
-        let root = DocumentSymbol {
-            name: title,
-            detail: None,
-            kind: SymbolKind::FILE,
-            tags: None,
-            deprecated: None,
-            range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-            selection_range: Range::new(Position::new(0, 0), Position::new(0, 0)),
-            children: if root_children.is_empty() { None } else { Some(root_children) },
-        };
+        // 添加 bookmarks 到场景节点下
+        if !bookmarks_items.is_empty() {
+            if let Some(first_scene) = root_children.iter_mut().find(|s| s.kind == SymbolKind::CLASS) {
+                let mut existing_children = first_scene.children.take().unwrap_or_default();
+                existing_children.extend(bookmarks_items);
+                existing_children.sort_by_key(|s| s.selection_range.start.line);
+                first_scene.children = Some(existing_children);
+            }
+        }
 
-        vec![root]
+        // 直接返回 root_children，不需要根节点
+        root_children
     }
 
-    // 递归构建子节点树（子节点中的 note/bookmark 保留在原位置，不提取到顶层）
+    // 递归构建子节点树，收集子节点中的 note/bookmark 到顶层 NOTES/Bookmarks
     fn build_children_tree(
         &self,
         tokens: &[betterfountain_rust::StructToken],
         parent_children: &mut Vec<DocumentSymbol>,
-        _notes_items: &mut Vec<DocumentSymbol>,
-        _bookmarks_items: &mut Vec<DocumentSymbol>,
+        notes_items: &mut Vec<DocumentSymbol>,
+        bookmarks_items: &mut Vec<DocumentSymbol>,
     ) {
         for token in tokens {
-            // 子节点如果是 note/bookmark，保留在原位置作为 children
+            // 子节点中的 note/bookmark 提取到顶层 NOTES/Bookmarks
+            if token.isnote {
+                notes_items.push(self.create_note_symbol(token));
+                continue;
+            }
+            if token.is_bookmark {
+                bookmarks_items.push(self.create_bookmark_symbol(token));
+                continue;
+            }
+            
             let mut symbol = self.token_to_document_symbol(token);
             let mut children: Vec<DocumentSymbol> = Vec::new();
 
             // 递归处理孙节点
-            self.build_children_tree(&token.children, &mut children, _notes_items, _bookmarks_items);
-            self.build_children_tree(&token.structs, &mut children, _notes_items, _bookmarks_items);
+            self.build_children_tree(&token.children, &mut children, notes_items, bookmarks_items);
+            self.build_children_tree(&token.structs, &mut children, notes_items, bookmarks_items);
 
-            // 添�� synopses
+            // 添加 synopses
             for syn in &token.synopses {
                 let range = Range::new(
                     Position::new(syn.line as u32, 0),
@@ -254,6 +226,14 @@ impl ParsedFountain {
     }
 
     fn token_to_document_symbol(&self, token: &betterfountain_rust::StructToken) -> DocumentSymbol {
+        let duration = if token.section {
+            // section 使用子节点时长相加
+            self.format_duration(self.calculate_section_duration(token))
+        } else {
+            // 场景和其他使用自己的时长
+            self.format_duration(token.duration_sec)
+        };
+        
         let name = if token.text.is_empty() {
             if token.isscene {
                 "Scene".to_string()
@@ -268,6 +248,12 @@ impl ParsedFountain {
             token.text.clone()
         };
 
+        let name_with_duration = if duration.is_empty() {
+            name
+        } else {
+            format!("{} [{}]", name, duration)
+        };
+
         let kind = if token.isscene {
             SymbolKind::CLASS
         } else if token.ischartor {
@@ -276,12 +262,6 @@ impl ParsedFountain {
             SymbolKind::NAMESPACE
         } else {
             SymbolKind::PROPERTY
-        };
-
-        let detail = if token.section {
-            self.format_duration(self.calculate_section_duration(token))
-        } else {
-            self.format_duration(token.duration_sec)
         };
 
         let range = token.range.as_ref().map(|r| {
@@ -298,24 +278,12 @@ impl ParsedFountain {
 
         let selection_range = range.clone();
 
-        let mut children: Vec<DocumentSymbol> = Vec::new();
-
-        for child in &token.children {
-            if !child.isnote && !child.is_bookmark {
-                children.push(self.token_to_document_symbol(child));
-            }
-        }
-        for child in &token.structs {
-            if !child.isnote && !child.is_bookmark {
-                children.push(self.token_to_document_symbol(child));
-            }
-        }
-
-        let children = if children.is_empty() { None } else { Some(children) };
+        // children 由 build_children_tree 处理
+        let children: Option<Vec<DocumentSymbol>> = None;
 
         DocumentSymbol {
-            name,
-            detail: Some(detail),
+            name: name_with_duration,
+            detail: None,
             kind,
             tags: None,
             deprecated: None,
