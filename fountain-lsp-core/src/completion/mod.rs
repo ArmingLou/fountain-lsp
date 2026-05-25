@@ -144,11 +144,56 @@ impl CompletionProvider {
                     kind: Some(CompletionItemKind::TEXT),
                     ..Default::default()
                 });
-            } else if current_key == "copyright:" {
-                let year = chrono::Local::now().format("%Y").to_string();
+            } else if current_key == "metadata:" || current_key == "metadata" {
+                let json_snippet = r#"{
+    "userPassword":"",
+    "ownerPassword":"",
+    "permissions":{
+        "printing":false,
+        "modifying":false,
+        "copying":false,
+        "annotating":false,
+        "fillingForms":false,
+        "contentAccessibility":false,
+        "documentAssembly":false
+    },
+    "chars_per_minu": 420,
+    "dial_chars_per_minu": 240,
+    "dial_sec_per_char": 0.25,
+    "dial_sec_per_punc_short": 0.25,
+    "dial_sec_per_punc_long": 0.4,
+    "action_sec_per_char": 0.15,
+    "embedFonts": false,
+    "print": {
+        "chinaFormat": 3,
+        "rmBlankLine": 1,
+        "print_title_page": 1,
+        "print_preface_page": 1,
+        "print_sections": 0,
+        "print_synopsis": 1,
+        "scenes_numbers": "both",
+        "paper_size": "a4",
+        "font_size": 12,
+        "character_spacing": 1,
+        "note_font_size": 9,
+        "lines_per_page": 30,
+        "top_margin": 1.19,
+        "bottom_margin": 1,
+        "page_width": 8.27,
+        "page_height": 11.69,
+        "left_margin": 1.5,
+        "right_margin": 1.5,
+        "font_width": 0.1,
+        "note_line_height": 0.17,
+        "page_number_top_margin": 0.4
+    }
+}"#.to_string();
                 items.push(CompletionItem {
-                    label: format!("(c) {}", year),
-                    kind: Some(CompletionItemKind::TEXT),
+                    label: "插入Metadata JSON".to_string(),
+                    kind: Some(CompletionItemKind::SNIPPET),
+                    insert_text: Some(json_snippet),
+                    insert_text_format: Some(InsertTextFormat::SNIPPET),
+                    detail: Some("插入完整Metadata配置".to_string()),
                     ..Default::default()
                 });
             }
