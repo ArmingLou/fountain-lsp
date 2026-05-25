@@ -309,6 +309,43 @@ impl CompletionProvider {
                 sort_text: Some("0i".to_string()),
                 ..Default::default()
             });
+            let shot_cut_1 = if prev_line_empty { ">{=镜头交切=} ↓".to_string() } else { "\n>{=镜头交切=} ↓".to_string() };
+            let shot_cut_2 = if prev_line_empty { ">{#镜头交切#} ↓".to_string() } else { "\n>{#镜头交切#} ↓".to_string() };
+            let shot_cut_3 = if prev_line_empty { ">{+镜头交切+} ↓".to_string() } else { "\n>{+镜头交切+} ↓".to_string() };
+            let shot_cut_end = if prev_line_empty { ">{-结束交切-} ↑".to_string() } else { "\n>{-结束交切-} ↑".to_string() };
+
+            items.push(CompletionItem {
+                label: ">{=镜头交切=} ↓ (只含以后新场景)".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: shot_cut_1 })),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("插入镜头交切 (只含以后新场景)".to_string()),
+                sort_text: Some("0j".to_string()),
+                ..Default::default()
+            });
+            items.push(CompletionItem {
+                label: ">{#镜头交切#} ↓ (含前一.当前.以后场景)".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: shot_cut_2 })),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("插入镜头交切（含前一.当前.以后场景）".to_string()),
+                sort_text: Some("0k".to_string()),
+                ..Default::default()
+            });
+            items.push(CompletionItem {
+                label: ">{+镜头交切+} ↓ (含当前.以后场景)".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: shot_cut_3 })),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("插入镜头交切（含当前.以后场景）".to_string()),
+                sort_text: Some("0k1".to_string()),
+                ..Default::default()
+            });
+            items.push(CompletionItem {
+                label: ">{-结束交切-} ↑".to_string(),
+                text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: shot_cut_end })),
+                kind: Some(CompletionItemKind::KEYWORD),
+                detail: Some("插入结束交切".to_string()),
+                sort_text: Some("0l".to_string()),
+                ..Default::default()
+            });
             items.push(CompletionItem {
                 label: "> <".to_string(),
                 text_edit: Some(CompletionTextEdit::Edit(TextEdit { range, new_text: format!("{}>$1<", prefix) })),
