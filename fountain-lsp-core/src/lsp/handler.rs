@@ -98,8 +98,10 @@ impl FountainLanguageHandler {
         None
     }
 
-    pub async fn document_symbol(&self, _params: DocumentSymbolParams) -> Option<Vec<DocumentSymbol>> {
-        None
+    pub async fn document_symbol(&self, params: DocumentSymbolParams) -> Option<Vec<DocumentSymbol>> {
+        let doc = self.documents.get(&params.text_document.uri.to_string()).await?;
+        let parsed = doc.parsed.as_ref()?;
+        Some(parsed.to_document_symbols())
     }
 
     pub async fn semantic_tokens_full(&self, _params: SemanticTokensParams) -> Option<SemanticTokensResult> {
