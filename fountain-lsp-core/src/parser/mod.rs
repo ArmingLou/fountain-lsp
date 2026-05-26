@@ -62,9 +62,9 @@ impl ParsedFountain {
             root_children.push(symbol);
         }
 
-        root_children.sort_by_key(|s| s.selection_range.start.line);
+        // NOTES/Bookmarks 置于顶层，子节点保留真实 range 确保跳转正确
+        let top_range = Range::new(Position::new(0, 0), Position::new(0, 0));
 
-        // 创建 NOTES 根节点，收集所有 note 数据
         if !notes_collector.is_empty() {
             notes_collector.sort_by_key(|s| s.selection_range.start.line);
             root_children.push(DocumentSymbol {
@@ -73,13 +73,12 @@ impl ParsedFountain {
                 kind: SymbolKind::NAMESPACE,
                 tags: None,
                 deprecated: None,
-                range: Range::default(),
-                selection_range: Range::default(),
+                range: top_range,
+                selection_range: top_range,
                 children: Some(notes_collector),
             });
         }
 
-        // 创建 Bookmarks 根节点，收集所有 bookmark 数据
         if !bookmarks_collector.is_empty() {
             bookmarks_collector.sort_by_key(|s| s.selection_range.start.line);
             root_children.push(DocumentSymbol {
@@ -88,8 +87,8 @@ impl ParsedFountain {
                 kind: SymbolKind::NAMESPACE,
                 tags: None,
                 deprecated: None,
-                range: Range::default(),
-                selection_range: Range::default(),
+                range: top_range,
+                selection_range: top_range,
                 children: Some(bookmarks_collector),
             });
         }
@@ -398,5 +397,110 @@ impl DocumentStore {
 impl Default for DocumentStore {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_fountain(text: &str) -> ParsedFountain {
+        let config = betterfountain_rust::Conf::default();
+        let result = betterfountain_rust::parse(text, &config, false, Some(true));
+        ParsedFountain {
+            tokens: result.tokens,
+            properties: result.properties,
+            statistics: result.statistics,
+        }
+    }
+
+    #[test]
+    fn test_notes_extracted_to_root() {
+        let text = "\
+INT. ROOM - DAY
+
+JOHN
+Hello world!
+
+[[这是一条笔记]]
+
+EXT. STREET - NIGHT
+
+MARY
+Hi there!
+
+/*| 章节目标：完成第一幕 */
+
+# Act 1
+## Scene 1
+>第一幕第一场景 <
+";
+
+        let parsed = parse_fountain(text);
+        let symbols = parsed.to_document_symbols();
+
+        eprintln!("=== 大纲节点总数: {} ===", symbols.len());
+        for (i, s) in symbols.iter().enumerate() {
+            let children_count = s.children.as_ref().map(|c| c.len()).unwrap_or(0);
+            eprintln!("  [{}] name={:?} kind={:?} range={:?} children={}", i, s.name, s.kind, s.range.start.line, children_count);
+            if let Some(children) = &s.children {
+                for (j, c) in children.iter().enumerate() {
+                    eprintln!("    child[{}] name={:?} kind={:?} range={:?}", j, c.name, c.kind, c.range.start.line);
+                }
+            }
+        }
+
+        // 验证 NOTES 节点存在且包含笔记
+        let notes_node = symbols.iter().find(|s| s.name == "NOTES");
+        assert!(notes_node.is_some(), "应该存在 NOTES 根节点");
+        let notes_node = notes_node.unwrap();
+        assert!(notes_node.children.is_some(), "NOTES 根节点应该有子节点");
+        let notes_children = notes_node.children.as_ref().unwrap();
+        assert!(!notes_children.is_empty(), "NOTES 根节点的子节点不应为空");
+        assert!(notes_children.iter().any(|c| c.name == "这是一条笔记"),
+            "NOTES 下应包含 '这是一条笔记'");
+
+        // 验证 Bookmarks 节点存在且包含书签
+        let bookmarks_node = symbols.iter().find(|s| s.name == "Bookmarks");
+        assert!(bookmarks_node.is_some(), "应该存在 Bookmarks 根节点");
+        let bookmarks_node = bookmarks_node.unwrap();
+        assert!(bookmarks_node.children.is_some(), "Bookmarks 根节点应该有子节点");
+        let bookmark_children = bookmarks_node.children.as_ref().unwrap();
+        assert!(!bookmark_children.is_empty(), "Bookmarks 根节点的子节点不应为空");
+        assert!(bookmark_children.iter().any(|c| c.name == "章节目标：完成第一幕"),
+            "Bookmarks 下应包含 '章节目标：完成第一幕'");
+
+        // 验证 note/bookmark 不在章节子节点中（已被抽取）
+        for s in &symbols {
+            if s.name == "NOTES" || s.name == "Bookmarks" {
+                continue;
+            }
+            if let Some(children) = &s.children {
+                for c in children {
+                    assert_ne!(c.kind, SymbolKind::CONSTANT,
+                        "章节子节点中不应再有 CONSTANT 类型: name={:?} parent={:?}", c.name, s.name);
+                }
+            }
+        }
+
+        // 验证 NOTES/Bookmarks 根节点在最顶层（range=0）
+        assert_eq!(notes_node.range.start.line, 0,
+            "NOTES 应为顶层节点 range=0");
+        assert_eq!(bookmarks_node.range.start.line, 0,
+            "Bookmarks 应为顶层节点 range=0");
+
+        let notes_child = notes_children.first().unwrap();
+        assert_eq!(notes_child.range.start.line, 5,
+            "note 子节点 range 应保留真实行号 5，实为 {}", notes_child.range.start.line);
+        assert_eq!(notes_child.selection_range.start.line, 5,
+            "note 子节点 selection_range 应保留真实行号");
+
+        let bookmark_child = bookmark_children.first().unwrap();
+        assert_eq!(bookmark_child.range.start.line, 12,
+            "bookmark 子节点 range 应保留真实行号 12，实为 {}", bookmark_child.range.start.line);
+        assert_eq!(bookmark_child.selection_range.start.line, 12,
+            "bookmark 子节点 selection_range 应保留真实行号");
+
+        eprintln!("测试通过！");
     }
 }
