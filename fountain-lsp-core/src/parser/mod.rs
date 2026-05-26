@@ -13,21 +13,24 @@ pub struct ParsedFountain {
 impl ParsedFountain {
     pub fn to_document_symbols(&self) -> Vec<DocumentSymbol> {
         let mut root_children: Vec<DocumentSymbol> = Vec::new();
+        // note 和 bookmark 统一收集器，最后抽取为根节点
+        let mut notes_collector: Vec<DocumentSymbol> = Vec::new();
+        let mut bookmarks_collector: Vec<DocumentSymbol> = Vec::new();
 
         for token in &self.properties.structure {
             if token.isnote {
-                root_children.push(self.create_note_symbol(token));
+                notes_collector.push(self.create_note_symbol(token));
                 continue;
             }
             if token.is_bookmark {
-                root_children.push(self.create_bookmark_symbol(token));
+                bookmarks_collector.push(self.create_bookmark_symbol(token));
                 continue;
             }
             let mut symbol = self.token_to_document_symbol(token);
             let mut children: Vec<DocumentSymbol> = Vec::new();
 
-            self.build_children_tree(&token.children, &mut children);
-            self.build_children_tree(&token.structs, &mut children);
+            self.build_children_tree(&token.children, &mut children, &mut notes_collector, &mut bookmarks_collector);
+            self.build_children_tree(&token.structs, &mut children, &mut notes_collector, &mut bookmarks_collector);
 
             for syn in &token.synopses {
                 let range = Range::new(
@@ -46,21 +49,9 @@ impl ParsedFountain {
                 });
             }
 
+            // 附属注解统一推送到收集器
             for note in &token.notes {
-                let range = Range::new(
-                    Position::new(note.line as u32, 0),
-                    Position::new(note.line as u32, note.note.len() as u32)
-                );
-                children.push(DocumentSymbol {
-                    name: note.note.clone(),
-                    detail: None,
-                    kind: SymbolKind::CONSTANT,
-                    tags: None,
-                    deprecated: None,
-                    range: range.clone(),
-                    selection_range: range,
-                    children: None,
-                });
+                notes_collector.push(self.create_note_item_symbol(&note.note, note.line as u32));
             }
 
             if !children.is_empty() {
@@ -72,23 +63,56 @@ impl ParsedFountain {
         }
 
         root_children.sort_by_key(|s| s.selection_range.start.line);
+
+        // 创建 NOTES 根节点，收集所有 note 数据
+        if !notes_collector.is_empty() {
+            notes_collector.sort_by_key(|s| s.selection_range.start.line);
+            root_children.push(DocumentSymbol {
+                name: "NOTES".to_string(),
+                detail: None,
+                kind: SymbolKind::NAMESPACE,
+                tags: None,
+                deprecated: None,
+                range: Range::default(),
+                selection_range: Range::default(),
+                children: Some(notes_collector),
+            });
+        }
+
+        // 创建 Bookmarks 根节点，收集所有 bookmark 数据
+        if !bookmarks_collector.is_empty() {
+            bookmarks_collector.sort_by_key(|s| s.selection_range.start.line);
+            root_children.push(DocumentSymbol {
+                name: "Bookmarks".to_string(),
+                detail: None,
+                kind: SymbolKind::NAMESPACE,
+                tags: None,
+                deprecated: None,
+                range: Range::default(),
+                selection_range: Range::default(),
+                children: Some(bookmarks_collector),
+            });
+        }
+
         root_children
     }
 
-    // 递归构建子节点树，保留 note/bookmark 在原位置
+    // 递归构建子节点树，note/bookmark 统一推送到收集器
     fn build_children_tree(
         &self,
         tokens: &[betterfountain_rust::StructToken],
         parent_children: &mut Vec<DocumentSymbol>,
+        notes_collector: &mut Vec<DocumentSymbol>,
+        bookmarks_collector: &mut Vec<DocumentSymbol>,
     ) {
         for token in tokens {
-            // 子节点中的 note/bookmark 保留在原位置作为 children
+            // note/bookmark 推送到收集器，不放在子节点中
             if token.isnote {
-                parent_children.push(self.create_note_symbol(token));
+                notes_collector.push(self.create_note_symbol(token));
                 continue;
             }
             if token.is_bookmark {
-                parent_children.push(self.create_bookmark_symbol(token));
+                bookmarks_collector.push(self.create_bookmark_symbol(token));
                 continue;
             }
             
@@ -96,8 +120,8 @@ impl ParsedFountain {
             let mut children: Vec<DocumentSymbol> = Vec::new();
 
             // 递归处理孙节点
-            self.build_children_tree(&token.children, &mut children);
-            self.build_children_tree(&token.structs, &mut children);
+            self.build_children_tree(&token.children, &mut children, notes_collector, bookmarks_collector);
+            self.build_children_tree(&token.structs, &mut children, notes_collector, bookmarks_collector);
 
             // 添加 synopses
             for syn in &token.synopses {
@@ -117,22 +141,9 @@ impl ParsedFountain {
                 });
             }
 
-            // 添加 token.notes（附属注解）作为当前节点的 children
+            // 附属注解统一推送到收集器
             for note in &token.notes {
-                let range = Range::new(
-                    Position::new(note.line as u32, 0),
-                    Position::new(note.line as u32, note.note.len() as u32)
-                );
-                children.push(DocumentSymbol {
-                    name: note.note.clone(),
-                    detail: None,
-                    kind: SymbolKind::CONSTANT,
-                    tags: None,
-                    deprecated: None,
-                    range: range.clone(),
-                    selection_range: range,
-                    children: None,
-                });
+                notes_collector.push(self.create_note_item_symbol(&note.note, note.line as u32));
             }
 
             if !children.is_empty() {
@@ -157,6 +168,24 @@ impl ParsedFountain {
 
         DocumentSymbol {
             name: if token.text.is_empty() { format!("Line {}", line) } else { token.text.clone() },
+            detail: None,
+            kind: SymbolKind::CONSTANT,
+            tags: None,
+            deprecated: None,
+            range: range.clone(),
+            selection_range: range,
+            children: None,
+        }
+    }
+
+    // 创建基于文本+行号的符号条目（用于 token.notes 中的附属注解）
+    fn create_note_item_symbol(&self, text: &str, line: u32) -> DocumentSymbol {
+        let range = Range::new(
+            Position::new(line, 0),
+            Position::new(line, text.len() as u32)
+        );
+        DocumentSymbol {
+            name: if text.is_empty() { format!("Line {}", line) } else { text.to_string() },
             detail: None,
             kind: SymbolKind::CONSTANT,
             tags: None,
