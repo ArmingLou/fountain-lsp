@@ -8,6 +8,8 @@ pub struct ParsedFountain {
     pub tokens: Vec<betterfountain_rust::ScriptToken>,
     pub properties: betterfountain_rust::ScreenplayProperties,
     pub statistics: Option<betterfountain_rust::statistics::Statistics>,
+    pub length_dialogue: f64,
+    pub length_action: f64,
 }
 
 impl ParsedFountain {
@@ -320,6 +322,241 @@ impl ParsedFountain {
             format!("{}s", secs)
         }
     }
+
+    /// 查找指定行所在的 token，返回悬停提示文本
+    pub fn hover_at_line(&self, line: u32) -> Option<String> {
+        let cursor_time = self.cursor_play_time(line);
+        let total_time = self.length_dialogue + self.length_action;
+        // 先在 structure 树中查找 StructToken（场景/章节等结构化信息优先）
+        if let Some(struct_token) = self.find_token_at_line(&self.properties.structure, line) {
+            return Some(self.build_hover_text(struct_token, cursor_time, total_time));
+        }
+        // 再在 ScriptToken 中查找（角色/对话/动作等）
+        if let Some(script_token) = self.find_script_token_at_line(line) {
+            return Some(self.build_script_hover_text(script_token, cursor_time, total_time));
+        }
+        None
+    }
+
+    /// 获取光标位置对应的影片累计时间（基于 ScriptToken 的 play_time_sec）
+    fn cursor_play_time(&self, line: u32) -> f64 {
+        // 查找行号最接近的 ScriptToken
+        let mut best_time = 0.0;
+        let mut best_line = 0u32;
+        for tk in &self.tokens {
+            let tk_line = tk.line as u32;
+            if tk_line <= line {
+                if tk_line >= best_line {
+                    best_line = tk_line;
+                    best_time = tk.play_time_sec;
+                }
+            }
+        }
+        best_time
+    }
+
+    fn find_token_at_line<'a>(
+        &self,
+        tokens: &'a [betterfountain_rust::StructToken],
+        line: u32,
+    ) -> Option<&'a betterfountain_rust::StructToken> {
+        for token in tokens {
+            if let Some(range) = &token.range {
+                if line >= range.start.line as u32 && line <= range.end.line as u32 {
+                    if let Some(child) = self.find_token_at_line(&token.children, line) {
+                        return Some(child);
+                    }
+                    if let Some(child) = self.find_token_at_line(&token.structs, line) {
+                        return Some(child);
+                    }
+                    return Some(token);
+                }
+            }
+            if let Some(child) = self.find_token_at_line(&token.children, line) {
+                return Some(child);
+            }
+            if let Some(child) = self.find_token_at_line(&token.structs, line) {
+                return Some(child);
+            }
+        }
+        None
+    }
+
+    fn build_hover_text(&self, token: &betterfountain_rust::StructToken, cursor_time: f64, total_time: f64) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        let duration_str = self.format_duration(token.duration_sec);
+        let cursor_str = self.format_duration(cursor_time);
+        let total_str = self.format_duration(total_time);
+
+        if token.section {
+            lines.push(format!("**📂 章节**: {}", if token.text.is_empty() { "（无标题）" } else { &token.text }));
+            let total_dur = self.format_duration(self.calculate_section_duration(token));
+            if !total_dur.is_empty() {
+                lines.push(format!("**总时长**: {}", total_dur));
+            }
+            if !duration_str.is_empty() {
+                lines.push(format!("**自身时长**: {}", duration_str));
+            }
+            if !token.synopses.is_empty() {
+                lines.push("**概要**:".to_string());
+                for syn in &token.synopses {
+                    lines.push(format!("  > {}", syn.synopsis));
+                }
+            }
+            if !total_str.is_empty() {
+                lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+            }
+        } else if token.isscene {
+            lines.push(format!("**🎬 场景**: {}", if token.text.is_empty() { "（无标题）" } else { &token.text }));
+            if !duration_str.is_empty() {
+                lines.push(format!("**场景时长**: {}", duration_str));
+            }
+            if !token.synopses.is_empty() {
+                lines.push("**概要**:".to_string());
+                for syn in &token.synopses {
+                    lines.push(format!("  > {}", syn.synopsis));
+                }
+            }
+            if !token.notes.is_empty() {
+                lines.push("**注解**:".to_string());
+                for note in &token.notes {
+                    lines.push(format!("  └ {}", note.note));
+                }
+            }
+            if !total_str.is_empty() {
+                lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+            }
+        } else if token.ischartor {
+            lines.push(format!("**🎭 角色**: {}", if token.text.is_empty() { "（无名称）" } else { &token.text }));
+            if !duration_str.is_empty() {
+                lines.push(format!("**台词时长**: {}", duration_str));
+            }
+            if let Some(stats) = &self.statistics {
+                for char_stat in &stats.character_stats.characters {
+                    if char_stat.name == token.text {
+                        let total_char_dur = self.format_duration(char_stat.seconds_total);
+                        if !total_char_dur.is_empty() {
+                            lines.push(format!("**角色总时长**（台词+动作）: {}", total_char_dur));
+                        }
+                        lines.push(format!("**出场次数**: {} 次", char_stat.number_of_scenes));
+                        lines.push(format!("**台词段数**: {} 段", char_stat.speaking_parts));
+                        lines.push(format!("**总词数**: {} 词", char_stat.words_spoken));
+                        break;
+                    }
+                }
+            }
+            if !total_str.is_empty() {
+                lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+            }
+        } else if token.isnote {
+            lines.push("**📝 注解**".to_string());
+            if !token.text.is_empty() {
+                lines.push(format!("  {}", token.text));
+            }
+        } else if token.is_bookmark {
+            lines.push("**🔖 书签**".to_string());
+            if !token.text.is_empty() {
+                lines.push(format!("  {}", token.text));
+            }
+        } else {
+            if !token.text.is_empty() {
+                lines.push(format!("**{}**", token.text));
+            }
+            if !cursor_str.is_empty() && !total_str.is_empty() {
+                lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+            }
+        }
+
+        if lines.is_empty() {
+            return String::new();
+        }
+
+        lines.join("\n\n")
+    }
+
+    fn find_script_token_at_line(&self, line: u32) -> Option<&betterfountain_rust::ScriptToken> {
+        self.tokens.iter()
+            .rev()
+            .filter(|tk| {
+                let t = tk.token_type.as_str();
+                t == "character" || t == "scene_heading" || t == "scene_header"
+                    || t == "dialogue" || t == "action" || t == "transition"
+            })
+            .find(|tk| (tk.line as u32) <= line)
+    }
+
+    fn build_script_hover_text(&self, token: &betterfountain_rust::ScriptToken, cursor_time: f64, total_time: f64) -> String {
+        let cursor_str = if cursor_time > 0.0 { self.format_duration(cursor_time) } else { "0s".to_string() };
+        let total_str = self.format_duration(total_time);
+
+        match token.token_type.as_str() {
+            "character" => {
+                let mut lines = vec![format!("**🎭 角色**: {}", token.text)];
+                if let Some(dur) = token.duration_sec {
+                    lines.push(format!("**台词时长**: {}", self.format_duration(dur)));
+                }
+                if let Some(ref stats) = self.statistics {
+                    for char_stat in &stats.character_stats.characters {
+                        if char_stat.name == token.text {
+                            let total_char = self.format_duration(char_stat.seconds_total);
+                            if !total_char.is_empty() {
+                                lines.push(format!("**角色总时长**（台词+动作）: {}", total_char));
+                            }
+                            lines.push(format!("**出场次数**: {} 次", char_stat.number_of_scenes));
+                            lines.push(format!("**台词段数**: {} 段", char_stat.speaking_parts));
+                            lines.push(format!("**总词数**: {} 词", char_stat.words_spoken));
+                            break;
+                        }
+                    }
+                }
+                if !total_str.is_empty() {
+                    lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+                }
+                lines.join("\n\n")
+            }
+            "scene_heading" | "scene_header" => {
+                let mut lines = vec![format!("**🎬 场景**: {}", token.text)];
+                if !total_str.is_empty() {
+                    lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+                }
+                lines.join("\n\n")
+            }
+            "dialogue" => {
+                let mut lines = vec![format!("**💬 对话**")];
+                if let Some(ref ch) = token.character {
+                    lines.push(format!("**角色**: {}", ch));
+                }
+                if let Some(dur) = token.duration_sec {
+                    lines.push(format!("**台词时长**: {}", self.format_duration(dur)));
+                }
+                if !total_str.is_empty() {
+                    lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+                }
+                lines.join("\n\n")
+            }
+            "action" => {
+                let mut lines = vec![format!("**📝 动作描述**")];
+                if !total_str.is_empty() {
+                    lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+                }
+                lines.join("\n\n")
+            }
+            "transition" => {
+                let mut lines = vec![format!("**🎞 转场**: {}", token.text)];
+                if !total_str.is_empty() {
+                    lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+                }
+                lines.join("\n\n")
+            }
+            _ => {
+                let mut lines = vec![format!("**{}**", token.token_type)];
+                if !total_str.is_empty() {
+                    lines.push(format!("**⏱ 影片时间**: {} / {}", cursor_str, total_str));
+                }
+                lines.join("\n\n")
+            }
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -347,6 +584,8 @@ impl FountainDocument {
             tokens: result.tokens,
             properties: result.properties,
             statistics: result.statistics,
+            length_dialogue: result.length_dialogue,
+            length_action: result.length_action,
         });
     }
 }
@@ -411,6 +650,8 @@ mod tests {
             tokens: result.tokens,
             properties: result.properties,
             statistics: result.statistics,
+            length_dialogue: result.length_dialogue,
+            length_action: result.length_action,
         }
     }
 
@@ -500,6 +741,43 @@ Hi there!
             "bookmark 子节点 range 应保留真实行号 12，实为 {}", bookmark_child.range.start.line);
         assert_eq!(bookmark_child.selection_range.start.line, 12,
             "bookmark 子节点 selection_range 应保留真实行号");
+
+        eprintln!("测试通过！");
+    }
+
+    #[test]
+    fn test_hover_at_line() {
+        let text = "\
+INT. ROOM - DAY
+
+JOHN
+Hello world!
+
+MARY
+Hi there!
+
+# Act 1
+## Scene 1
+";
+
+        let parsed = parse_fountain(text);
+        
+        // 场景标题悬停
+        let hover = parsed.hover_at_line(0);
+        assert!(hover.is_some(), "场景标题悬浮应有结果");
+        assert!(hover.unwrap().contains("场景"), "场景悬浮应包含场景信息");
+
+        // 角色悬停（MARY at line 5）
+        let hover = parsed.hover_at_line(5);
+        assert!(hover.is_some(), "角色悬浮应有结果");
+        let hover_text = hover.unwrap();
+        assert!(hover_text.contains("角色"), "角色悬浮应包含角色信息: {}", hover_text);
+        assert!(hover_text.contains("影片时间"), "角色悬浮应包含影片时间: {}", hover_text);
+        
+        // 章节悬停
+        let hover = parsed.hover_at_line(8);
+        assert!(hover.is_some(), "章节悬浮应有结果");
+        assert!(hover.unwrap().contains("章节"), "章节悬浮应包含章节信息");
 
         eprintln!("测试通过！");
     }

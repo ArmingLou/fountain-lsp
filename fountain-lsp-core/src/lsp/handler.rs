@@ -94,8 +94,18 @@ impl FountainLanguageHandler {
         self.completion_provider.provide_completion(params).await
     }
 
-    pub async fn hover(&self, _params: HoverParams) -> Option<Hover> {
-        None
+    pub async fn hover(&self, params: HoverParams) -> Option<Hover> {
+        let doc = self.documents.get(&params.text_document_position_params.text_document.uri.to_string()).await?;
+        let parsed = doc.parsed.as_ref()?;
+        let line = params.text_document_position_params.position.line;
+        let hover_text = parsed.hover_at_line(line)?;
+        Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: hover_text,
+            }),
+            range: None,
+        })
     }
 
     pub async fn document_symbol(&self, params: DocumentSymbolParams) -> Option<Vec<DocumentSymbol>> {
